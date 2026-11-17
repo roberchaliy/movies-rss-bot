@@ -7,7 +7,6 @@
 import html
 import json
 import os
-import re
 import time
 from pathlib import Path
 
@@ -36,53 +35,20 @@ def save_seen(seen: set) -> None:
     SEEN_FILE.write_text(json.dumps(list(seen)[-5000:]))
 
 
-def find_image(entry) -> str | None:
-    """Ищет картинку поста: media:content, media:thumbnail, вложение или первый <img> в тексте."""
-    for key in ("media_content", "media_thumbnail"):
-        for m in entry.get(key, []):
-            if m.get("url"):
-                return m["url"]
-    for enc in entry.get("enclosures", []):
-        if enc.get("type", "").startswith("image") and enc.get("href"):
-            return enc["href"]
-    texts = [c.get("value", "") for c in entry.get("content", [])]
-    texts.append(entry.get("summary", ""))
-    for t in texts:
-        m = re.search(r'<img[^>]+src="([^"]+)"', t)
-        if m:
-            return html.unescape(m.group(1))
-    return None
-
-
-def tg(method: str, payload: dict) -> requests.Response:
-    r = requests.post(f"{API}/{method}", json=payload, timeout=30)
+def send(entry, feed_title: str) -> None:
+    # Формат как у IFTTT: название ленты + ссылка.
+    # Заголовок, описание, картинку и Instant View Telegram подтянет сам из превью ссылки.
+    link = entry.get("link", "")
+    text = f"{html.escape(feed_title)}\n{link}"
+    r = requests.post(f"{API}/sendMessage", data={
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": False,
+    }, timeout=20)
     if r.status_code == 429:                 # лимит Telegram — ждём и повторяем
         time.sleep(r.json()["parameters"]["retry_after"])
-        return tg(method, payload)
-    return r
-
-
-def send(entry, feed_title: str) -> None:
-    link = entry.get("link", "")
-    title = html.escape(entry.get("title", "Без заголовка"))
-    caption = f'<a href="{link}"><b>{title}</b></a>'   # заголовок-ссылка, без голого URL
-    image = find_image(entry)
-
-    # 1) Есть картинка из поста — шлём её крупно с заголовком-ссылкой
-    if image:
-        r = tg("sendPhoto", {
-            "chat_id": CHAT_ID, "photo": image,
-            "caption": caption, "parse_mode": "HTML",
-        })
-        if r.ok:
-            return
-        print("sendPhoto не сработал, шлю превью ссылки:", r.text)
-
-    # 2) Картинки нет — заголовок-ссылка + крупное превью страницы
-    r = tg("sendMessage", {
-        "chat_id": CHAT_ID, "text": caption, "parse_mode": "HTML",
-        "link_preview_options": {"url": link, "prefer_large_media": True},
-    })
+        return send(entry, feed_title)
     r.raise_for_status()
 
 
